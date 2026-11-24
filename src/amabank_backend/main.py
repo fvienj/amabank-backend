@@ -1,5 +1,7 @@
 from datetime import datetime
 import random
+import secrets
+import string
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -39,13 +41,27 @@ users = [
 ]
 
 transactions = []
+otp_store: dict[str, dict] = {}
 
 next_user_id = 2
+
+
+def generate_otp(phone: str) -> tuple[str, str]:
+    code = f"{secrets.randbelow(1000000):06d}"
+    alphabet = string.ascii_uppercase + string.digits
+    ref = "".join(secrets.choice(alphabet) for _ in range(4))
+    otp_store[phone] = {"code": code, "ref": ref}
+    return code, ref
 
 
 # --- Pydantic Schemas ---
 class PhoneCheckRequest(BaseModel):
     phone: str
+
+
+class OtpVerifyRequest(BaseModel):
+    phone: str
+    otp: str
 
 
 class RegisterRequest(BaseModel):
@@ -93,17 +109,28 @@ class NoteUpdate(BaseModel):
     note: str
 
 
+# --- Health Check ---
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "AMABank API"}
+
+
 # --- Auth & KYC Endpoints ---
 @app.post("/auth/check-phone")
 def checkPhone(data: PhoneCheckRequest):
     if len(data.phone) != 10 or not data.phone.isdigit():
-        raise HTTPException(status_code=400, detail="Enter a valid 10-digit mobile number")
+        raise HTTPException(
+            status_code=400, detail="Enter a valid 10-digit mobile number"
+        )
 
     for user in users:
         if user["phone"] == data.phone:
-            raise HTTPException(status_code=400, detail="Mobile number is already registered")
+            raise HTTPException(
+                status_code=400, detail="Mobile number is already registered"
+            )
 
-    return {"available": True, "otpRef": "PA6Q"}
+    otp_code, otp_ref = generate_otp(data.phone)
+    return {"available": True, "otp": otp_code, "otpRef": otp_ref}
 
 
 @app.post("/auth/register")
@@ -112,12 +139,16 @@ def registerUser(data: RegisterRequest):
 
     for user in users:
         if user["phone"] == data.phone:
-            raise HTTPException(status_code=400, detail="Phone number already registered")
+            raise HTTPException(
+                status_code=400, detail="Phone number already registered"
+            )
 
     first_name = data.fullName.strip().split(" ")[0]
     last4 = str(random.randint(1000, 9999))
     acct_num = f"9090 {random.randint(1000, 9999)} {last4}"
-    card_num = f"4532 {random.randint(1000, 9999)} {random.randint(1000, 9999)} {last4}"
+    card_num = (
+        f"4532 {random.randint(1000, 9999)} {random.randint(1000, 9999)} {last4}"
+    )
 
     new_user = {
         "id": next_user_id,
@@ -149,12 +180,34 @@ def registerUser(data: RegisterRequest):
 def loginUser(data: LoginRequest):
     for user in users:
         if user["phone"] == data.phone:
-            return {"message": "OTP sent", "user": user, "otpRef": "PA6Q"}
+            otp_code, otp_ref = generate_otp(data.phone)
+            return {
+                "message": "OTP sent",
+                "user": user,
+                "otp": otp_code,
+                "otpRef": otp_ref,
+            }
 
     raise HTTPException(
         status_code=404,
         detail="Account not found. Please register first.",
     )
+
+
+@app.post("/auth/resend-otp")
+def resendOtp(data: PhoneCheckRequest):
+    otp_code, otp_ref = generate_otp(data.phone)
+    return {"message": "OTP resent", "otp": otp_code, "otpRef": otp_ref}
+
+
+@app.post("/auth/verify-otp")
+def verifyOtp(data: OtpVerifyRequest):
+    record = otp_store.get(data.phone)
+    if not record or record["code"] != data.otp:
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+
+    otp_store.pop(data.phone, None)
+    return {"verified": True}
 
 
 @app.post("/auth/verify-passcode")
@@ -223,9 +276,9 @@ def createTransaction(data: TransactionCreate):
     if data.type == "debit":
         if deduction > target_user["balance"]:
             raise HTTPException(status_code=400, detail="Insufficient balance")
-        target_user["balance"] -= deduction
+        target_user["balance"] = round(target_user["balance"] - deduction, 2)
     else:
-        target_user["balance"] += data.amount
+        target_user["balance"] = round(target_user["balance"] + data.amount, 2)
 
     now_str = datetime.now().strftime("%B %d, %Y at %H:%M:%S")
     new_tx = {
