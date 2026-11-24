@@ -1,13 +1,11 @@
 from datetime import datetime
 import random
-from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="AMABank API", version="1.0.0")
+app = FastAPI(title="AMABank API")
 
-# Allow requests from Expo Go, Android APK, and Expo Web
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,231 +14,254 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- In-Memory Database ---
+users = [
+    {
+        "id": 1,
+        "firstName": "FJ",
+        "fullName": "Fvienj Bennet Nopuente",
+        "email": "fj.nopuente@amabank.ph",
+        "address": "Puntod, Cagayan de Oro City",
+        "idType": "National ID",
+        "idNumber": "4829-1039-5821-0094",
+        "tier": "Verified Account",
+        "accountNumber": "9090 9123 4909",
+        "code": "AMAPH-2029",
+        "phone": "9171233387",
+        "maskedPhone": "+63********3387",
+        "passcode": "123456",
+        "balance": 0.0,
+        "cardNumber": "4532 8910 3412 4909",
+        "cardExpiry": "08/29",
+        "cardCvv": "614",
+        "cardFrozen": False,
+    }
+]
 
-# Schemas 
+transactions = []
+
+next_user_id = 2
+
+
+# --- Pydantic Schemas ---
 class PhoneCheckRequest(BaseModel):
     phone: str
 
 
 class RegisterRequest(BaseModel):
-    firstName: str
-    lastName: str
-    fullName: Optional[str] = None
-    phone: str
+    fullName: str
     email: str
     address: str
     idType: str
     idNumber: str
+    phone: str
     passcode: str
 
 
 class LoginRequest(BaseModel):
     phone: str
+
+
+class PasscodeRequest(BaseModel):
+    userId: int
     passcode: str
 
 
 class UserUpdateRequest(BaseModel):
-    firstName: Optional[str] = None
-    lastName: Optional[str] = None
-    fullName: Optional[str] = None
-    email: Optional[str] = None
-    address: Optional[str] = None
-    cardFrozen: Optional[bool] = None
+    fullName: str | None = None
+    firstName: str | None = None
+    email: str | None = None
+    address: str | None = None
+    passcode: str | None = None
+    cardFrozen: bool | None = None
 
 
-class TransactionCreateRequest(BaseModel):
-    userId: int = 1
-    status: str = "Completed"
+class TransactionCreate(BaseModel):
+    id: str | None = None
+    userId: int
+    status: str
     recipient: str
-    accountRef: Optional[str] = ""
+    accountRef: str = ""
     amount: float
     fee: float = 0.0
-    total: Optional[float] = None
-    note: Optional[str] = ""
-    type: str  # "credit" or "debit"
+    total: float | None = None
+    note: str = ""
+    type: str  # "debit" or "credit"
 
 
-class TransactionUpdateRequest(BaseModel):
+class NoteUpdate(BaseModel):
     note: str
 
 
-# In-Memory Data Store 
-def generate_account_number() -> str:
-    return f"9090 {random.randint(1000, 9999)} {random.randint(1000, 9999)}"
-
-
-def generate_card_number() -> str:
-    return f"4532 {random.randint(1000, 9999)} {random.randint(1000, 9999)} {random.randint(1000, 9999)}"
-
-
-def generate_reference_no() -> str:
-    stamp = datetime.now().strftime("%y%m%d%H%M")
-    return f"REF{stamp}{random.randint(100, 999)}"
-
-
-users_db = [
-    {
-        "id": 1,
-        "firstName": "FJ",
-        "lastName": "Nopuente",
-        "fullName": "FJ Nopuente",
-        "phone": "+639171234567",
-        "email": "fj@amabank.ph",
-        "address": "Cagayan de Oro City",
-        "idType": "National ID (PhilSys)",
-        "idNumber": "1234567890123456",
-        "passcode": "123456",
-        "balance": 0.0,
-        "accountNumber": "9090 9123 4909",
-        "code": "AMAPH-2029",
-        "cardNumber": "4532 8910 3412 4909",
-        "cardExpiry": "08/29",
-        "cardCvv": "614",
-        "cardFrozen": False,
-        "kycVerified": True,
-    }
-]
-
-transactions_db = []
-
-
-# Health Check 
-@app.get("/")
-def root():
-    return {"status": "online", "service": "AMABank FastAPI"}
-
-
-# Auth & KYC Endpoints
+# --- Auth & KYC Endpoints ---
 @app.post("/auth/check-phone")
-def check_phone(payload: PhoneCheckRequest):
-    normalized = payload.phone.strip()
-    exists = any(u["phone"] == normalized for u in users_db)
-    if exists:
-        raise HTTPException(status_code=400, detail="Mobile number is already registered.")
-    return {"available": True, "phone": normalized}
+def checkPhone(data: PhoneCheckRequest):
+    if len(data.phone) != 10 or not data.phone.isdigit():
+        raise HTTPException(status_code=400, detail="Enter a valid 10-digit mobile number")
+
+    for user in users:
+        if user["phone"] == data.phone:
+            raise HTTPException(status_code=400, detail="Mobile number is already registered")
+
+    return {"available": True, "otpRef": "PA6Q"}
 
 
 @app.post("/auth/register")
-def register_user(payload: RegisterRequest):
-    normalized_phone = payload.phone.strip()
-    if any(u["phone"] == normalized_phone for u in users_db):
-        raise HTTPException(status_code=400, detail="Mobile number is already registered.")
+def registerUser(data: RegisterRequest):
+    global next_user_id
 
-    new_id = max((u["id"] for u in users_db), default=0) + 1
-    full_name = payload.fullName or f"{payload.firstName.strip()} {payload.lastName.strip()}"
+    for user in users:
+        if user["phone"] == data.phone:
+            raise HTTPException(status_code=400, detail="Phone number already registered")
+
+    first_name = data.fullName.strip().split(" ")[0]
+    last4 = str(random.randint(1000, 9999))
+    acct_num = f"9090 {random.randint(1000, 9999)} {last4}"
+    card_num = f"4532 {random.randint(1000, 9999)} {random.randint(1000, 9999)} {last4}"
 
     new_user = {
-        "id": new_id,
-        "firstName": payload.firstName.strip(),
-        "lastName": payload.lastName.strip(),
-        "fullName": full_name,
-        "phone": normalized_phone,
-        "email": payload.email.strip(),
-        "address": payload.address.strip(),
-        "idType": payload.idType,
-        "idNumber": payload.idNumber.strip(),
-        "passcode": payload.passcode.strip(),
-        "balance": 0.0,
-        "accountNumber": generate_account_number(),
+        "id": next_user_id,
+        "firstName": first_name,
+        "fullName": data.fullName.strip(),
+        "email": data.email.strip(),
+        "address": data.address.strip(),
+        "idType": data.idType,
+        "idNumber": data.idNumber.strip(),
+        "tier": "Verified Account",
+        "accountNumber": acct_num,
         "code": "AMAPH-2029",
-        "cardNumber": generate_card_number(),
+        "phone": data.phone,
+        "maskedPhone": f"+63********{data.phone[-4:]}",
+        "passcode": data.passcode,
+        "balance": 0.0,
+        "cardNumber": card_num,
         "cardExpiry": "08/29",
         "cardCvv": str(random.randint(100, 999)),
         "cardFrozen": False,
-        "kycVerified": True,
     }
-    users_db.append(new_user)
-    return new_user
+    users.append(new_user)
+    next_user_id += 1
+
+    return {"message": "KYC verified and account created", "user": new_user}
 
 
 @app.post("/auth/login")
-def login_user(payload: LoginRequest):
-    normalized_phone = payload.phone.strip()
-    user = next((u for u in users_db if u["phone"] == normalized_phone), None)
-    if not user:
-        raise HTTPException(status_code=404, detail="Account not found. Please register first.")
-    if user["passcode"] != payload.passcode.strip():
-        raise HTTPException(status_code=401, detail="Incorrect 6-digit MPIN.")
-    return user
+def loginUser(data: LoginRequest):
+    for user in users:
+        if user["phone"] == data.phone:
+            return {"message": "OTP sent", "user": user, "otpRef": "PA6Q"}
+
+    raise HTTPException(
+        status_code=404,
+        detail="Account not found. Please register first.",
+    )
 
 
-# User & Card Endpoints
+@app.post("/auth/verify-passcode")
+def verifyPasscode(data: PasscodeRequest):
+    for user in users:
+        if user["id"] == data.userId:
+            if user["passcode"] != data.passcode:
+                raise HTTPException(status_code=401, detail="Incorrect MPIN")
+            return {"verified": True, "user": user}
+    raise HTTPException(status_code=404, detail="User not found")
+
+
+# --- User & Balance Endpoints ---
+@app.get("/users")
+def getUsers():
+    return users
+
+
 @app.get("/users/{user_id}")
-def get_user(user_id: int):
-    user = next((u for u in users_db if u["id"] == user_id), None)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-    return user
+def getUser(user_id: int):
+    for user in users:
+        if user["id"] == user_id:
+            return user
+    raise HTTPException(status_code=404, detail="User not found")
 
 
 @app.patch("/users/{user_id}")
-def update_user(user_id: int, payload: UserUpdateRequest):
-    user = next((u for u in users_db if u["id"] == user_id), None)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+def updateUser(user_id: int, data: UserUpdateRequest):
+    for user in users:
+        if user["id"] == user_id:
+            if data.fullName is not None:
+                user["fullName"] = data.fullName
+            if data.firstName is not None:
+                user["firstName"] = data.firstName
+            if data.email is not None:
+                user["email"] = data.email
+            if data.address is not None:
+                user["address"] = data.address
+            if data.passcode is not None:
+                user["passcode"] = data.passcode
+            if data.cardFrozen is not None:
+                user["cardFrozen"] = data.cardFrozen
+            return user
+    raise HTTPException(status_code=404, detail="User not found")
 
-    updates = payload.model_dump(exclude_unset=True)
-    user.update(updates)
-    if "firstName" in updates or "lastName" in updates:
-        user["fullName"] = f"{user['firstName']} {user['lastName']}".strip()
-    return user
 
-
-# Transactions CRUD Endpoints
+# --- Transactions CRUD Endpoints ---
 @app.get("/transactions/{user_id}")
-def get_transactions(user_id: int):
-    user_txs = [tx for tx in transactions_db if tx["userId"] == user_id]
-    return list(reversed(user_txs))
+def getTransactions(user_id: int):
+    return [tx for tx in transactions if tx["userId"] == user_id]
 
 
 @app.post("/transactions")
-def create_transaction(payload: TransactionCreateRequest):
-    user = next((u for u in users_db if u["id"] == payload.userId), None)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+def createTransaction(data: TransactionCreate):
+    target_user = None
+    for user in users:
+        if user["id"] == data.userId:
+            target_user = user
+            break
 
-    total_amount = payload.total if payload.total is not None else (payload.amount + payload.fee)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-    if payload.type == "debit":
-        if user["balance"] < total_amount:
-            raise HTTPException(status_code=400, detail="Insufficient balance.")
-        user["balance"] = round(user["balance"] - total_amount, 2)
+    deduction = data.total if data.total is not None else data.amount
+
+    if data.type == "debit":
+        if deduction > target_user["balance"]:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+        target_user["balance"] -= deduction
     else:
-        user["balance"] = round(user["balance"] + payload.amount, 2)
+        target_user["balance"] += data.amount
 
-    new_id = max((tx["id"] for tx in transactions_db), default=0) + 1
+    now_str = datetime.now().strftime("%B %d, %Y at %H:%M:%S")
     new_tx = {
-        "id": new_id,
-        "userId": payload.userId,
-        "referenceNo": generate_reference_no(),
-        "status": payload.status,
-        "recipient": payload.recipient,
-        "accountRef": payload.accountRef,
-        "amount": payload.amount,
-        "fee": payload.fee,
-        "total": total_amount,
-        "note": payload.note or "",
-        "type": payload.type,
-        "date": datetime.now().strftime("%b %d, %Y • %I:%M %p"),
+        "id": data.id or str(int(datetime.now().timestamp() * 1000)),
+        "userId": data.userId,
+        "status": data.status,
+        "recipient": data.recipient,
+        "accountRef": data.accountRef,
+        "from": target_user["fullName"],
+        "bank": "AMABank",
+        "amount": data.amount,
+        "fee": data.fee,
+        "total": deduction,
+        "note": data.note,
+        "referenceNo": f"REF{random.randint(100000000000, 999999999999)}",
+        "date": now_str,
+        "type": data.type,
     }
-    transactions_db.append(new_tx)
-    return new_tx
+    transactions.insert(0, new_tx)
+
+    return {"transaction": new_tx, "balance": target_user["balance"]}
 
 
 @app.patch("/transactions/{tx_id}")
-def update_transaction(tx_id: int, payload: TransactionUpdateRequest):
-    tx = next((t for t in transactions_db if t["id"] == tx_id), None)
-    if not tx:
-        raise HTTPException(status_code=404, detail="Transaction not found.")
-    tx["note"] = payload.note
-    return tx
+def updateTransactionNote(tx_id: str, data: NoteUpdate):
+    for tx in transactions:
+        if str(tx["id"]) == str(tx_id):
+            tx["note"] = data.note
+            return tx
+    raise HTTPException(status_code=404, detail="Transaction not found")
 
 
 @app.delete("/transactions/{tx_id}")
-def delete_transaction(tx_id: int):
-    global transactions_db
-    tx = next((t for t in transactions_db if t["id"] == tx_id), None)
-    if not tx:
-        raise HTTPException(status_code=404, detail="Transaction not found.")
-    transactions_db = [t for t in transactions_db if t["id"] != tx_id]
-    return {"deleted": True, "id": tx_id}
+def deleteTransaction(tx_id: str):
+    for index, tx in enumerate(transactions):
+        if str(tx["id"]) == str(tx_id):
+            deleted = transactions.pop(index)
+            return {"message": "Successfully deleted", "data": deleted}
+    raise HTTPException(status_code=404, detail="Transaction not found")
